@@ -1,13 +1,13 @@
 class Player:
     def __init__(self, name):
         self.name = name
-        self.hand = ()
+        self.hands = ()
         self.balance = 1000 
         self.count = 0
 
     # Bet of 0 means sit out, bet must be greater than or equal to min_bet
     # Bet < 1 means leave table
-    def bet(self, state):
+    def bet(self, state, min_bet):
         raise NotImplemented
     
     # 0 = stand, 1 = hit, 2 = double down, 3 = split
