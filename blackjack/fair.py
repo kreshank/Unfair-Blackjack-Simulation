@@ -2,11 +2,11 @@ from blackjack.base import Blackjack
 from numpy import random
 
 class FairBlackjack(Blackjack):
-    def __init__(self, analytics=None, deck_count=6, player_count=1):
-        super().__init__(analytics, deck_count, player_count)
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
     def should_shuffle(self):
-        if self.analytics.cards_since_last_shuffle >= self.deck_count * 52 * 0.75:
+        if len(self.deck) <= self.deck_count * 52 * 0.75:
             return True
         return False
 

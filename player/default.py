@@ -30,6 +30,10 @@ class DefaultPlayer(Player):
             [1]*2 + [2]*5 + [0]*2 + [1]*5, # 7
             [0]*6 + [2] + [0]*7, # 8
             [0]*14, # 9
+            [0]*14, # 10
+            [0]*14, # 11
+            [0]*14, # 12
+            [0]*14, # 13
         ]
         self.hard_totals = [ # (hand total, dealer upcard)
             [1]*14, # placehold
@@ -53,25 +57,37 @@ class DefaultPlayer(Player):
             [0]*14, # 18
             [0]*14, # 19
             [0]*14, # 20
+            [0]*14, # 21
         ]
 
     def bet(self, state, min_bet):
         return min_bet
     
+    def safe_double(self, state, val):
+        if val == 2:
+            if len(self.hand) == 2 and self.balance >= state['bet']:
+                return 2
+            return 1
+        return val
+
     # 0 = stand, 1 = hit, 2 = double down, 3 = split
     def decide(self, state):
         dealer_upcard = state['dealer_upcard']
+        self.hand = state['hand']
+        bet = state['bet']
         if len(self.hand) == 2 and self.hand[0] == self.hand[1]:
             if self.pair_splitting[self.hand[0]][dealer_upcard]:
                 return 3
         value, aces = self.value_hand()
         if aces == 1:
-            return self.soft_totals[value - 11][dealer_upcard]
-        return self.hard_totals[value][dealer_upcard]
+            return self.safe_double(state, self.soft_totals[value - 11][dealer_upcard])
+        return self.safe_double(state, self.hard_totals[value][dealer_upcard])
     
-    def count(self, card):
+    def update_count(self, card):
         if card in [2, 3, 4, 5, 6]:
             self.count += 1
+            return 1
         elif card in [1, 10]:
             self.count -= 1
-        return self.count
+            return -1
+        return 0

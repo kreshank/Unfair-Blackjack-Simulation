@@ -14,7 +14,7 @@ class PlayerHand:
     unresolved_hands: List[Tuple] # [(value, bet), ...]
 
 class Blackjack:
-    def __init__(self, analytics=None, deck_count=6, min_bet=10, payout_ratio=1.5):
+    def __init__(self, analytics=None, deck_count=6, min_bet=10, payout_ratio=1.5, debug=False):
         self.analytics = analytics or GameAnalytics()
 
         self.deck_count = deck_count
@@ -25,6 +25,7 @@ class Blackjack:
         self.deck = []
         self.players = []
         self.dealer_hand = () # Second is always face down
+        self.debug = debug
     
     # Returns True if game is ready to start new round, False if dealer has Blackjack
     def start_round(self):
@@ -38,11 +39,24 @@ class Blackjack:
 
         self.deal()
 
-        if self.value_hand(self.dealer_hand)[0] == 21:
+        if self.debug:
+            print ("Dealer showing:\t\t\t", self.dealer_hand[0])
             for ph in self.players:
-                ph.true_count += ph.player.count(self.dealer_hand[1])
+                if ph.playing:
+                    print (f"Player {ph.player.name} hand:\t\t", ph.hand)
+
+        if self.value_hand(self.dealer_hand)[0] == 21:
+            if self.debug:
+                print ("Dealer has Blackjack!")
+            for ph in self.players:
+                ph.true_count += ph.player.update_count(self.dealer_hand[1])
                 if ph.playing and self.value_hand(ph.hand)[0] == 21:
+                    if self.debug:
+                        print (f"Player {ph.player.name} pushes {ph.bet}")
                     ph.player.balance += ph.bet
+                elif self.debug:
+                    print (f"Player {ph.player.name} loses {ph.bet}")
+
             return False
         return True
 
@@ -50,60 +64,100 @@ class Blackjack:
         if not split_hand and self.value_hand(ph.hand)[0] == 21:
             ph.player.balance += ph.bet * (self.payout_ratio + 1)
         while True:
-            state = {}
+            state = {
+                'dealer_upcard': self.dealer_hand[0],
+                'hand': ph.hand,
+                'bet': ph.bet,
+            }
             decision = ph.player.decide(state)
+            if self.debug:
+                print (f"Player {ph.player.name}, hand: {ph.hand}, decision: {decision}")
             if decision == 0:  # Stand
                 ph.unresolved_hands.append((self.value_hand(ph.hand)[0], ph.bet))
                 break
             elif decision == 1:  # Hit
                 ph.hand += (self.draw(),)
-                if self.value_hand(ph.hand)[0] > 21:
-                    break
             elif decision == 2:  # Double
                 if len(ph.hand) == 2 and ph.bet <= ph.player.balance:
-                    ph.balance -= ph.bet
+                    ph.player.balance -= ph.bet
                     ph.bet *= 2
                     ph.hand += (self.draw(),)
-                    if self.value_hand(ph.hand)[0] > 21:
-                        break
                 else:
                     raise Exception("Player not permitted to double down.")
             elif decision == 3:  # Split
                 if len(ph.hand) == 2 and ph.hand[0] == ph.hand[1]:
                     bet = ph.bet
                     next_hand = (ph.hand[0], self.draw())
-                    ph.hand[1] = self.draw()
+                    ph.hand = (ph.hand[1], self.draw())
                     self.play_hand(ph, split_hand=True)
                     ph.bet = bet
                     ph.hand = next_hand 
                     self.play_hand(ph)
             else:
                 raise Exception("Invalid decision")
+            
+            if self.value_hand(ph.hand)[0] > 21:
+                break
 
     def play_game(self):
         for ph in self.players:
             if ph.playing and ph.at_table:
+                if self.debug:
+                    print (f"Player {ph.player.name} making decisions...")
                 self.play_hand(ph)
 
         for ph in self.players:
-            ph.true_count += ph.player.count(self.dealer_hand[1])
+            ph.true_count += ph.player.update_count(self.dealer_hand[1])
         
         dealer_value = 0
-        while dealer_value := self.value_hand(self.dealer_hand)[0] < 17:
-            self.dealer_hand += (self.draw(),)
+        while (dealer_value := self.value_hand(self.dealer_hand)[0]) < 17:
+            card = self.draw()
+            self.dealer_hand += (card,)
+            if self.debug:
+                print (f"Dealer new hand:\t\t\t {self.dealer_hand}")
+        
+        if dealer_value > 21:
+            if self.debug:
+                print ("Dealer busts!")
+            for ph in self.players:
+                if ph.playing:
+                    for value, bet in ph.unresolved_hands:
+                        if self.debug:
+                            print (f"Player {ph.player.name} wins {bet}")
+                        ph.player.balance += bet * 2
+            return
 
+        if self.debug:
+            print (f"Dealer final hand:\t\t {self.dealer_hand} value: {dealer_value}")
         for ph in self.players:
             if ph.playing:
                 for value, bet in ph.unresolved_hands:
                     if value > dealer_value:
+                        if self.debug:
+                            print (f"Player {ph.player.name} wins {bet}")
                         ph.player.balance += bet * 2
-                        
                     elif value == dealer_value:
+                        if self.debug:
+                            print (f"Player {ph.player.name} pushes {bet}")
                         ph.player.balance += bet
+                    else:
+                        if self.debug:
+                            print (f"Player {ph.player.name} loses {bet}")
+
 
 
     def add_player(self, player):
-        self.players.append(PlayerHand(player=player, playing=False, at_table=True, bet=0, hand=()))
+        self.players.append(
+            PlayerHand(
+                player=player, 
+                playing=False, 
+                at_table=True, 
+                bet=0, 
+                hand=(),
+                true_count=0,
+                unresolved_hands=[]
+            )
+        )
     
     def remove_player(self, player_name):
         for ph in self.players:
@@ -114,14 +168,20 @@ class Blackjack:
         raise Exception(f"Player {player_name} not in the game")
 
     def deal(self):
-        state = {}
-        for ph in self.players:
+        for i, ph in enumerate(self.players):
+            state = {
+                'position at table': i,
+                'players at table': len([p for p in self.players if p.at_table]),
+                'player playing': len([p for p in self.players if p.playing])
+            }   
             ph.hand = ()
-            ph.player.bet(state, self.min_bet)
+            ph.unresolved_hands = []
+            ph.bet = ph.player.bet(state, self.min_bet)
             if ph.at_table and ph.bet >= self.min_bet:
+                print (f"Player {ph.player.name} bets {ph.bet}")
                 ph.hand += (self.draw(),)
                 ph.playing = True
-                ph.balance -= ph.bet
+                ph.player.balance -= ph.bet
         self.dealer_hand = (self.draw(),)
         for ph in self.players:
             ph.hand += (self.draw(),)
@@ -135,7 +195,7 @@ class Blackjack:
             self.analytics.card_frequency[card] = self.analytics.card_frequency.get(card, 0) + 1
             for ph in self.players:
                 if not hidden:
-                    ph.true_count += ph.player.count(card)
+                    ph.true_count += ph.player.update_count(card)
             return card
         else:
             raise Exception("The deck is empty")
@@ -146,7 +206,7 @@ class Blackjack:
                 card = self.deck.pop()
                 self.analytics.cards_since_last_shuffle += 1
                 for ph in self.players:
-                    ph.true_count += ph.player.count(card)
+                    ph.true_count += ph.player.update_count(card)
 
     def value_hand(self, hand):
         value = 0

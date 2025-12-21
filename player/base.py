@@ -1,7 +1,7 @@
 class Player:
     def __init__(self, name):
         self.name = name
-        self.hands = ()
+        self.hand = ()
         self.balance = 1000 
         self.count = 0
 
@@ -15,7 +15,7 @@ class Player:
         raise NotImplemented
     
     # Returns count adjustment for given card
-    def count(self, card):
+    def update_count(self, card):
         raise NotImplemented
     
     def value_hand(self):
@@ -33,4 +33,5 @@ class Player:
         while value > 21 and As:
             value -= 10
             As -= 1
+        print (f"Calculating value for hand: {self.hand}, value: {value}, aces: {aces}")
         return value, aces
