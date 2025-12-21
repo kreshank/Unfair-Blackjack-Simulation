@@ -20,16 +20,17 @@ class Player:
     
     def value_hand(self):
         value = 0
-        aces = 0
+        As = 0
         for card in self.hand:
             if card >= 10:
                 value += 10
             elif card == 1:
-                aces += 1
+                As += 1
                 value += 11
             else:
                 value += card
-        while value > 21 and aces:
+        aces = As
+        while value > 21 and As:
             value -= 10
-            aces -= 1
+            As -= 1
         return value, aces

@@ -1,6 +1,6 @@
 from analytics import GameAnalytics
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Tuple, List
 from player.base import Player
 
 @dataclass
