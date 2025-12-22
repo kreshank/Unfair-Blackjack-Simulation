@@ -6,7 +6,7 @@ from blackjack.fair import FairBlackjack
 
 def main():
     game = FairBlackjack(debug=True)
-    player = DefaultPlayer("Default")
+    player = DefaultPlayer("1")
     game.add_player(player)
 
     hands = 100

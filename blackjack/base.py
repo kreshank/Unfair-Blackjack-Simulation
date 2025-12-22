@@ -40,27 +40,29 @@ class Blackjack:
         self.deal()
 
         if self.debug:
-            print ("Dealer showing:\t\t\t", self.dealer_hand[0])
             for ph in self.players:
                 if ph.playing:
-                    print (f"Player {ph.player.name} hand:\t\t", ph.hand)
+                    print (f"\tPlayer {ph.player.name} hand:\t", ph.hand)
+            print ("Dealer shows:", self.dealer_hand[0])
 
         if self.value_hand(self.dealer_hand)[0] == 21:
             if self.debug:
-                print ("Dealer has Blackjack!")
+                print ("\tDealer has Blackjack!")
             for ph in self.players:
                 ph.true_count += ph.player.update_count(self.dealer_hand[1])
                 if ph.playing and self.value_hand(ph.hand)[0] == 21:
                     if self.debug:
-                        print (f"Player {ph.player.name} pushes {ph.bet}")
+                        print (f"\t\tPlayer {ph.player.name} pushes {ph.bet}")
                     ph.player.balance += ph.bet
                 elif self.debug:
-                    print (f"Player {ph.player.name} loses {ph.bet}")
+                    print (f"\t\tPlayer {ph.player.name} loses {ph.bet}")
 
             return False
         return True
 
     def play_hand(self, ph, split_hand=False):
+        if self.debug:
+            print (f"\tPlayer \"{ph.player.name}\" making decisions...")
         if not split_hand and self.value_hand(ph.hand)[0] == 21:
             ph.player.balance += ph.bet * (self.payout_ratio + 1)
         while True:
@@ -71,7 +73,7 @@ class Blackjack:
             }
             decision = ph.player.decide(state)
             if self.debug:
-                print (f"Player {ph.player.name}, hand: {ph.hand}, decision: {decision}")
+                print (f"\t\thand: {ph.hand}, decision: {self.decision_to_str(decision)}")
             if decision == 0:  # Stand
                 ph.unresolved_hands.append((self.value_hand(ph.hand)[0], ph.bet))
                 break
@@ -102,8 +104,6 @@ class Blackjack:
     def play_game(self):
         for ph in self.players:
             if ph.playing and ph.at_table:
-                if self.debug:
-                    print (f"Player {ph.player.name} making decisions...")
                 self.play_hand(ph)
 
         for ph in self.players:
@@ -111,38 +111,38 @@ class Blackjack:
         
         dealer_value = 0
         while (dealer_value := self.value_hand(self.dealer_hand)[0]) < 17:
+            if self.debug:
+                print (f"Dealer hand: {self.dealer_hand}, value: {dealer_value}")
             card = self.draw()
             self.dealer_hand += (card,)
-            if self.debug:
-                print (f"Dealer new hand:\t\t\t {self.dealer_hand}")
         
         if dealer_value > 21:
             if self.debug:
-                print ("Dealer busts!")
+                print ("\t\tDealer busts!")
             for ph in self.players:
                 if ph.playing:
                     for value, bet in ph.unresolved_hands:
                         if self.debug:
-                            print (f"Player {ph.player.name} wins {bet}")
+                            print (f"\tPlayer {ph.player.name} wins {bet}")
                         ph.player.balance += bet * 2
             return
 
         if self.debug:
-            print (f"Dealer final hand:\t\t {self.dealer_hand} value: {dealer_value}")
+            print (f"Dealer final hand: {self.dealer_hand} value: {dealer_value}")
         for ph in self.players:
             if ph.playing:
                 for value, bet in ph.unresolved_hands:
                     if value > dealer_value:
                         if self.debug:
-                            print (f"Player {ph.player.name} wins {bet}")
+                            print (f"\tPlayer \"{ph.player.name}\" wins {bet}")
                         ph.player.balance += bet * 2
                     elif value == dealer_value:
                         if self.debug:
-                            print (f"Player {ph.player.name} pushes {bet}")
+                            print (f"\tPlayer \"{ph.player.name}\" pushes")
                         ph.player.balance += bet
                     else:
                         if self.debug:
-                            print (f"Player {ph.player.name} loses {bet}")
+                            print (f"\tPlayer \"{ph.player.name}\" loses {bet}")
 
 
 
@@ -178,7 +178,7 @@ class Blackjack:
             ph.unresolved_hands = []
             ph.bet = ph.player.bet(state, self.min_bet)
             if ph.at_table and ph.bet >= self.min_bet:
-                print (f"Player {ph.player.name} bets {ph.bet}")
+                print (f"Player \"{ph.player.name}\" ({ph.player.balance}) bets {ph.bet}")
                 ph.hand += (self.draw(),)
                 ph.playing = True
                 ph.player.balance -= ph.bet
@@ -223,6 +223,18 @@ class Blackjack:
             value -= 10
             aces -= 1
         return value, aces
+    
+    def decision_to_str(self, decision):
+        if decision == 0:
+            return "stand"
+        elif decision == 1:
+            return "hit"
+        elif decision == 2:
+            return "double down"
+        elif decision == 3:
+            return "split"
+        else:
+            return "Unknown Decision"
 
     def should_shuffle(self):
         raise NotImplementedError("Subclasses must implement should_shuffle method")

@@ -33,5 +33,4 @@ class Player:
         while value > 21 and As:
             value -= 10
             As -= 1
-        print (f"Calculating value for hand: {self.hand}, value: {value}, aces: {aces}")
         return value, aces
