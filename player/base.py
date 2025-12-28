@@ -6,17 +6,19 @@ class Player:
         self.count = 0
 
     # Bet of 0 means sit out, bet must be greater than or equal to min_bet
-    # Bet < 1 means leave table
-    def bet(self, state, min_bet):
-        raise NotImplemented
+    # Bet < 0 means leave table
+    # metadata is a dict of any info passed to decision making
+    # returns bet, metadata
+    def bet(self, state, min_bet, max_bet):
+        raise NotImplementedError
     
     # 0 = stand, 1 = hit, 2 = double down, 3 = split
     def decide(self, state):
-        raise NotImplemented
+        raise NotImplementedError
     
     # Returns count adjustment for given card
     def update_count(self, card):
-        raise NotImplemented
+        raise NotImplementedError
     
     def value_hand(self):
         value = 0

@@ -60,8 +60,8 @@ class DefaultPlayer(Player):
             [0]*14, # 21
         ]
 
-    def bet(self, state, min_bet):
-        return min_bet
+    def bet(self, state, min_bet, max_bet):
+        return min_bet, None
     
     def safe_double(self, state, val):
         if val == 2:

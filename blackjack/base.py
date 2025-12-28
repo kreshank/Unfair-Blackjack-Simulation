@@ -1,6 +1,6 @@
 from analytics import GameAnalytics
 from dataclasses import dataclass
-from typing import Tuple, List
+from typing import Tuple, List, Dict
 from player.base import Player
 
 @dataclass
@@ -10,16 +10,18 @@ class PlayerHand:
     at_table: bool
     bet: int
     hand: Tuple
+    metadata: Dict[str, any]
     true_count: int
     unresolved_hands: List[Tuple] # [(value, bet), ...]
 
 class Blackjack:
-    def __init__(self, analytics=None, deck_count=6, min_bet=10, payout_ratio=1.5, debug=False):
+    def __init__(self, analytics=None, deck_count=6, min_bet=10, max_bet=1000, payout_ratio=1.5, debug=False):
         self.analytics = analytics or GameAnalytics()
 
         self.deck_count = deck_count
         self.player_count = 0
         self.min_bet = min_bet
+        self.max_bet = max_bet
         self.payout_ratio = payout_ratio
 
         self.deck = []
@@ -70,6 +72,8 @@ class Blackjack:
                 'dealer_upcard': self.dealer_hand[0],
                 'hand': ph.hand,
                 'bet': ph.bet,
+                'metadata': ph.metadata,
+                'cards_played' : self.analytics.cards_since_last_shuffle,
             }
             decision = ph.player.decide(state)
             if self.debug:
@@ -84,6 +88,8 @@ class Blackjack:
                     ph.player.balance -= ph.bet
                     ph.bet *= 2
                     ph.hand += (self.draw(),)
+                    ph.unresolved_hands.append((self.value_hand(ph.hand)[0], ph.bet))
+                    break
                 else:
                     raise Exception("Player not permitted to double down.")
             elif decision == 3:  # Split
@@ -170,13 +176,14 @@ class Blackjack:
     def deal(self):
         for i, ph in enumerate(self.players):
             state = {
-                'position at table': i,
-                'players at table': len([p for p in self.players if p.at_table]),
-                'player playing': len([p for p in self.players if p.playing])
-            }   
+                'table_pos': i,
+                'players_table': len([p for p in self.players if p.at_table]),
+                'players_play': len([p for p in self.players if p.playing]),
+                'decks': self.deck_count,
+            }
             ph.hand = ()
             ph.unresolved_hands = []
-            ph.bet = ph.player.bet(state, self.min_bet)
+            ph.bet, ph.metadata = ph.player.bet(state, self.min_bet)
             if ph.at_table and ph.bet >= self.min_bet:
                 print (f"Player \"{ph.player.name}\" ({ph.player.balance}) bets {ph.bet}")
                 ph.hand += (self.draw(),)
@@ -235,6 +242,27 @@ class Blackjack:
             return "split"
         else:
             return "Unknown Decision"
+        
+    def get_state(self, ph):
+        state = {
+            'deck_count': self.deck_count,
+            'min_bet': self.min_bet,
+            'payout_ratio': self.payout_ratio,
+            'players': [],
+            'dealer_hand': self.dealer_hand,
+            'deck_size': len(self.deck),
+        }
+        for ph in self.players:
+            state['players'].append({
+                'name': ph.player.name,
+                'balance': ph.player.balance,
+                'hand': ph.hand,
+                'playing': ph.playing,
+                'at_table': ph.at_table,
+                'bet': ph.bet,
+                'true_count': ph.true_count,
+            })
+        return state
 
     def should_shuffle(self):
         raise NotImplementedError("Subclasses must implement should_shuffle method")

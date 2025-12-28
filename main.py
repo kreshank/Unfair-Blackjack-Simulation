@@ -5,11 +5,11 @@ from player.default import DefaultPlayer
 from blackjack.fair import FairBlackjack
 
 def main():
-    game = FairBlackjack(debug=True)
+    game = FairBlackjack(debug=False)
     player = DefaultPlayer("1")
     game.add_player(player)
 
-    hands = 100
+    hands = 100000
     for _ in range(hands):
         print (f"--- Starting hand {_ + 1} of {hands} ---")
         if game.start_round():
