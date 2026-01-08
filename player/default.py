@@ -1,8 +1,9 @@
 from player.base import Player
+from utils.helpers import value_hand
 
 class DefaultPlayer(Player):
-    def __init__(self, name):
-        super().__init__(name)
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self.pair_splitting = [ # (split card, dealer upcard)
             [False]*14, # placehold
             [True]*14, # A
@@ -61,11 +62,13 @@ class DefaultPlayer(Player):
         ]
 
     def bet(self, state, min_bet, max_bet):
+        if self.balance >= self.max_balance:
+            return -1, None  # Leave table to cash out
         return min_bet, None
     
     def safe_double(self, state, val):
         if val == 2:
-            if len(self.hand) == 2 and self.balance >= state['bet']:
+            if state['can_double']:
                 return 2
             return 1
         return val
@@ -75,10 +78,10 @@ class DefaultPlayer(Player):
         dealer_upcard = state['dealer_upcard']
         self.hand = state['hand']
         bet = state['bet']
-        if len(self.hand) == 2 and self.hand[0] == self.hand[1]:
+        if state['can_split']:
             if self.pair_splitting[self.hand[0]][dealer_upcard]:
                 return 3
-        value, aces = self.value_hand()
+        value, aces = value_hand(self.hand)
         if aces == 1:
             return self.safe_double(state, self.soft_totals[value - 11][dealer_upcard])
         return self.safe_double(state, self.hard_totals[value][dealer_upcard])

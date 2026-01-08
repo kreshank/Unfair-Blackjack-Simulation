@@ -2,6 +2,7 @@ from analytics import GameAnalytics
 from dataclasses import dataclass
 from typing import Tuple, List, Dict
 from player.base import Player
+from utils.helpers import value_hand
 
 @dataclass
 class PlayerHand:
@@ -15,7 +16,13 @@ class PlayerHand:
     unresolved_hands: List[Tuple] # [(value, bet), ...]
 
 class Blackjack:
-    def __init__(self, analytics=None, deck_count=6, min_bet=10, max_bet=1000, payout_ratio=1.5, debug=False):
+    def __init__(self, 
+                 analytics=None, 
+                 deck_count=6, 
+                 min_bet=10, 
+                 max_bet=1000, 
+                 payout_ratio=1.5, 
+                 debug=False):
         self.analytics = analytics or GameAnalytics()
 
         self.deck_count = deck_count
@@ -41,18 +48,19 @@ class Blackjack:
 
         self.deal()
 
+    def check_deal(self):
         if self.debug:
             for ph in self.players:
                 if ph.playing:
                     print (f"\tPlayer {ph.player.name} hand:\t", ph.hand)
             print ("Dealer shows:", self.dealer_hand[0])
 
-        if self.value_hand(self.dealer_hand)[0] == 21:
+        if value_hand(self.dealer_hand)[0] == 21:
             if self.debug:
                 print ("\tDealer has Blackjack!")
             for ph in self.players:
                 ph.true_count += ph.player.update_count(self.dealer_hand[1])
-                if ph.playing and self.value_hand(ph.hand)[0] == 21:
+                if ph.playing and value_hand(ph.hand)[0] == 21:
                     if self.debug:
                         print (f"\t\tPlayer {ph.player.name} pushes {ph.bet}")
                     ph.player.balance += ph.bet
@@ -65,7 +73,7 @@ class Blackjack:
     def play_hand(self, ph, split_hand=False):
         if self.debug:
             print (f"\tPlayer \"{ph.player.name}\" making decisions...")
-        if not split_hand and self.value_hand(ph.hand)[0] == 21:
+        if not split_hand and value_hand(ph.hand)[0] == 21:
             ph.player.balance += ph.bet * (self.payout_ratio + 1)
         while True:
             state = {
@@ -74,12 +82,19 @@ class Blackjack:
                 'bet': ph.bet,
                 'metadata': ph.metadata,
                 'cards_played' : self.analytics.cards_since_last_shuffle,
+                'split_hand': split_hand,
+                'can_split': len(ph.hand) == 2 and ph.hand[0] == ph.hand[1],
+                'can_double': len(ph.hand) == 2 and ph.bet <= ph.player.balance,
+                'count': ph.player.count,
+                'balance': ph.player.balance,
+                'max_balance': ph.player.max_balance,
+                'decks': self.deck_count,
             }
             decision = ph.player.decide(state)
             if self.debug:
                 print (f"\t\thand: {ph.hand}, decision: {self.decision_to_str(decision)}")
             if decision == 0:  # Stand
-                ph.unresolved_hands.append((self.value_hand(ph.hand)[0], ph.bet))
+                ph.unresolved_hands.append((value_hand(ph.hand)[0], ph.bet))
                 break
             elif decision == 1:  # Hit
                 ph.hand += (self.draw(),)
@@ -88,10 +103,10 @@ class Blackjack:
                     ph.player.balance -= ph.bet
                     ph.bet *= 2
                     ph.hand += (self.draw(),)
-                    ph.unresolved_hands.append((self.value_hand(ph.hand)[0], ph.bet))
+                    ph.unresolved_hands.append((value_hand(ph.hand)[0], ph.bet))
                     break
                 else:
-                    raise Exception("Player not permitted to double down.")
+                    raise Exception(f"Player {ph.player.name} not permitted to double down.")
             elif decision == 3:  # Split
                 if len(ph.hand) == 2 and ph.hand[0] == ph.hand[1]:
                     bet = ph.bet
@@ -104,7 +119,7 @@ class Blackjack:
             else:
                 raise Exception("Invalid decision")
             
-            if self.value_hand(ph.hand)[0] > 21:
+            if value_hand(ph.hand)[0] > 21:
                 break
 
     def play_game(self):
@@ -116,7 +131,7 @@ class Blackjack:
             ph.true_count += ph.player.update_count(self.dealer_hand[1])
         
         dealer_value = 0
-        while (dealer_value := self.value_hand(self.dealer_hand)[0]) < 17:
+        while (dealer_value := value_hand(self.dealer_hand)[0]) < 17:
             if self.debug:
                 print (f"Dealer hand: {self.dealer_hand}, value: {dealer_value}")
             card = self.draw()
@@ -161,7 +176,8 @@ class Blackjack:
                 bet=0, 
                 hand=(),
                 true_count=0,
-                unresolved_hands=[]
+                unresolved_hands=[],
+                metadata={},
             )
         )
     
@@ -180,15 +196,24 @@ class Blackjack:
                 'players_table': len([p for p in self.players if p.at_table]),
                 'players_play': len([p for p in self.players if p.playing]),
                 'decks': self.deck_count,
+                'count': ph.player.count,
+                'balance': ph.player.balance,
+                'max_balance': ph.player.max_balance,
+                'payout_ratio': self.payout_ratio,
             }
             ph.hand = ()
             ph.unresolved_hands = []
-            ph.bet, ph.metadata = ph.player.bet(state, self.min_bet)
+            ph.bet, ph.metadata = ph.player.bet(state, self.min_bet, self.max_bet)
             if ph.at_table and ph.bet >= self.min_bet:
                 print (f"Player \"{ph.player.name}\" ({ph.player.balance}) bets {ph.bet}")
                 ph.hand += (self.draw(),)
                 ph.playing = True
                 ph.player.balance -= ph.bet
+            elif ph.bet < 0:
+                print (f"Player {ph.player.name} cashes out with {ph.player.balance}")
+                ph.at_table = False
+                ph.playing = False
+                self.remove_player(ph.player.name)
         self.dealer_hand = (self.draw(),)
         for ph in self.players:
             ph.hand += (self.draw(),)
@@ -214,22 +239,6 @@ class Blackjack:
                 self.analytics.cards_since_last_shuffle += 1
                 for ph in self.players:
                     ph.true_count += ph.player.update_count(card)
-
-    def value_hand(self, hand):
-        value = 0
-        aces = 0
-        for card in hand:
-            if card >= 10:
-                value += 10
-            elif card == 1:
-                aces += 1
-                value += 11
-            else:
-                value += card
-        while value > 21 and aces:
-            value -= 10
-            aces -= 1
-        return value, aces
     
     def decision_to_str(self, decision):
         if decision == 0:
@@ -263,6 +272,12 @@ class Blackjack:
                 'true_count': ph.true_count,
             })
         return state
+    
+    def in_game(self, player_name):
+        for ph in self.players:
+            if ph.player.name == player_name and ph.at_table:
+                return True
+        return False
 
     def should_shuffle(self):
         raise NotImplementedError("Subclasses must implement should_shuffle method")

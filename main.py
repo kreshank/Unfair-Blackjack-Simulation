@@ -4,6 +4,9 @@ from blackjack.base import Blackjack
 from player.default import DefaultPlayer
 from blackjack.fair import FairBlackjack
 
+import torch
+
+@torch.no_grad()
 def main():
     game = FairBlackjack(debug=False)
     player = DefaultPlayer("1")

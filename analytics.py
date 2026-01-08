@@ -11,3 +11,11 @@ class GameAnalytics:
         # Frequency and history (as known by players)
         self.card_frequency = {}
         self.card_history = []
+
+    def print_summary(self):
+        print("Games Played:", self.games_played)
+        print("Player Wins:", self.player_wins)
+        print("Dealer Wins:", self.dealer_wins)
+        print("Busts:", self.busts)
+        print("House Loss Total:", self.house_loss_total)
+        print("Card Frequency:", self.card_frequency)

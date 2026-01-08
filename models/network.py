@@ -1,5 +1,6 @@
 import torch
 from models.base import Model
+from utils.helpers import value_hand
 
 class Network(torch.nn.Module, Model):
     def __init__(self, config):
@@ -13,6 +14,7 @@ class Network(torch.nn.Module, Model):
         policy_activation = config['policy_activation']
         action_dim = config['action_dim']
 
+        self.config = config
         self.count_head = torch.nn.Embedding(14, 1)
 
         self.encoder = torch.nn.Sequential(
@@ -43,51 +45,92 @@ class Network(torch.nn.Module, Model):
 
         self.policy = torch.nn.Sequential(*layers)
 
+        self._dist = None 
+        self._sampled_action = None
+        self._log_probs = []
 
-    @torch.no_grad()
     def bet_strategy(self, state, min_bet, max_bet):
-        table_pos = state['table_pos']
-        players_table = state['players_table']
-        players_play = state['players_play']
-        decks = state['decks']
-        input_tensor = torch.tensor(
-            [table_pos, players_table, players_play, self.count, decks, self.balance, self.min_bet, self.payout_ratio], 
-            dtype=torch.float32
-        )
+        input_tensor = torch.tensor([
+            state['table_pos'],
+            state['players_table'],
+            state['players_play'],
+            state['count'] / state['decks'],
+            state['balance'] / state['max_balance'],
+            min_bet / max_bet,
+            state['payout_ratio'],
+        ], dtype=torch.float32).unsqueeze(0)
+
         embedding = self.encoder(input_tensor)
         confidence = self.confidence_head(embedding)
-        bet_input = torch.cat([input_tensor, confidence.squeeze()], dim=0)
-        bet_multi = self.bet_head(bet_input)
-        bet = bet_multi.item() * max_bet
-        metadata = {'data': bet_input}
-        return bet, metadata
+        bet_input = torch.cat([input_tensor, confidence], dim=1)
+        
+        bet_mean = self.bet_head(bet_input)
+        bet_std = self.config['bet_std']
 
+        dist = torch.distributions.Normal(bet_mean, bet_std)
+        bet_multi = dist.rsample().clamp(-1, 1)
 
-    @torch.no_grad()
+        self._log_probs = [dist.log_prob(bet_multi).squeeze()]
+
+        bet = torch.clamp(bet_multi * max_bet, max=state['balance'])
+        metadata = {'data': bet_input.squeeze().detach()}
+
+        return bet.item(), metadata
+
+    def get_policy(self, state):
+        bet_input = state['metadata']['data'].detach().clone()
+        value, aces = value_hand(state['hand'])
+        state_tensor = torch.tensor([
+            state['dealer_upcard'], 
+            value, 
+            aces, 
+            state['cards_played']
+        ], dtype=torch.float32)
+        # update bet_input with dynamic values
+        bet_input = bet_input.clone()
+        bet_input[3] = state['count'] / state['decks']
+        bet_input[4] = state['balance'] / state['max_balance']
+        input_tensor = torch.cat([bet_input, state_tensor])
+
+        logits = self.policy(input_tensor)
+        mask = torch.ones(logits.shape, dtype=torch.bool)
+        mask[2] = state['can_double']
+        mask[3] = state['can_split']
+        logits += (~mask) * -1e9  # large negative number to mask
+        self._dist = torch.distributions.Categorical(logits=logits)
+        return logits
+    
     def decision_strategy(self, state):
-        dealer_upcard = state['dealer_upcard']
-        hand = state['hand']
-        cards_played = state['cards_played']
-        bet_input = state['metadata']['data']
-        value, aces = self.value_hand(hand)
-        state_tensor = torch.tensor(
-            [dealer_upcard, value, aces, cards_played] + bet_input.tolist(), 
-            dtype=torch.float32
-        )
-        return self.policy(state_tensor).argmax().item()
+        policy_logits = self.get_policy(state)
+        action = self._dist.sample()
+        self._log_probs.append(self._dist.log_prob(action).squeeze())
+        return action
 
-
-    @torch.no_grad()
     def count_strategy(self, card):
-        return self.count_head(torch.tensor(card, dtype=torch.float32)).item()
-
+        return self.count_head(torch.tensor(card, dtype=torch.long)).squeeze()
 
     def save(self, path):
         torch.save(self.state_dict(), path)
 
+    def load(self, path, config):
+        self.model = Network(config)  
+        self.model.load_state_dict(torch.load(path))
+        self.model.eval()
+        return self.model
+
     @staticmethod
-    def load(path, config):
-        model = Network(config)  
-        model.load_state_dict(torch.load(path))
-        model.eval()
-        return model
+    def initialize_weights(m):
+        if isinstance(m, torch.nn.Linear):
+            torch.nn.init.kaiming_normal_(m.weight.data)
+
+
+"""
+Rationale: 
+
+We use an policy-gradient design to learn three strategies:
+  1. Effective Card counting
+  2. Betting Aggressiveness
+  3. Gameplay Strategy (depending on count strategy)
+
+
+"""

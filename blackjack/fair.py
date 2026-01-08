@@ -6,7 +6,7 @@ class FairBlackjack(Blackjack):
         super().__init__(**kwargs)
 
     def should_shuffle(self):
-        if len(self.deck) <= self.deck_count * 52 * 0.75:
+        if len(self.deck) <= self.deck_count * 52 * 0.25:
             return True
         return False
 
