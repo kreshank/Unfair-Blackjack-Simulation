@@ -18,6 +18,8 @@ class FairBlackjack(Blackjack):
                     self.deck.append(card_value)
         random.shuffle(self.deck)
         self.analytics.cards_since_last_shuffle = 0
+        for ph in self.players:
+            ph.player.handle_shuffle()
     
     def should_switch_dealers(self):
         return False

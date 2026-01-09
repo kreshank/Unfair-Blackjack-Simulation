@@ -23,3 +23,6 @@ class Player:
     # Returns count adjustment for given card
     def update_count(self, card):
         raise NotImplementedError
+    
+    def handle_shuffle(self):
+        self.count = 0

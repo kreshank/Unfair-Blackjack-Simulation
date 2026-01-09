@@ -13,3 +13,6 @@ class Model():
 
     def load(path):
         raise NotImplementedError
+    
+    def handle_shuffle(self):
+        raise NotImplementedError

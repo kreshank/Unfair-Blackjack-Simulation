@@ -14,6 +14,10 @@ class TrainedPlayer(Player):
         return self.model.decision_strategy(state)
     
     def update_count(self, card):
-        change = self.model.count_strategy(card)
-        self.count += change 
-        return change
+        delta = self.model.count_strategy(card)
+        self.count += delta 
+        return delta
+    
+    def handle_shuffle(self):
+        self.count = 0
+        self.model.handle_shuffle()

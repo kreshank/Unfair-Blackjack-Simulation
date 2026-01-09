@@ -14,6 +14,11 @@ def train_network(player: TrainedPlayer,
                   horizon: int,
                   alpha: float = 0.001,
                   gamma: float = 0.99,
+                  lam_confidence: float = 0.5,
+                  lam_entropy: float = 0.01,
+                  lam_reward_var: float = 0.0,
+                  penalty_exit: float = 0.0,
+                  penalty_wong: float = 0.0,
                   seed = 42,
                   episode_test_debug = 50,
                   num_tests = 50,
@@ -27,51 +32,75 @@ def train_network(player: TrainedPlayer,
     for epoch in tqdm.tqdm(range(epochs), desc="Training Epochs"):
         for episode in range(episodes_per_epoch):
             player.model.train()
-            print ("new episode")
+            player.model.pg_training = True
+            player.model._confs = None
+            initial_balance = player.balance
             game = reset_environment(player, GameClass, env_range)
             done = False 
             hands = 0
             hand_log_probs = []
+            wins = []
+            confidences = []
             while not done and hands < horizon:
                 game.start_round()
                 balance_in = player.balance
                 if game.check_deal():
                     game.play_game()
-                
+
                 hands += 1
                 done = (player.balance >= player.max_balance 
                         or player.balance <= game.min_bet
                         or not game.in_game(player.name))
-                
+                wins.append(torch.sign(torch.tensor(player.balance - balance_in, dtype=torch.float32)))
+                confidences.append(player.model._confs)
                 if player.model._log_probs:
                     reward = (player.balance - balance_in) / player.max_balance # loss per round
-                    reward += 0.1 * hands # encourage to play hands
+                    if player.model.last_bet <= 0:
+                        reward -= penalty_exit
+                    elif player.model.last_bet < game.min_bet:
+                        reward -= penalty_wong
                     log_prob = torch.sum(torch.stack(player.model._log_probs))
                     hand_log_probs.append((log_prob, reward))
                     player.model._log_probs = []
 
-            if hand_log_probs:
-                loss = torch.tensor(0)
-                G = 0
-                for log_prob, reward in reversed(hand_log_probs):
-                    G = reward + gamma * G
-                    loss = loss - log_prob * G
-                loss = loss / len(hand_log_probs) if hand_log_probs else 1
+            # baseline
+            Gs = []
+            G = 0
+            for log_prob, reward in reversed(hand_log_probs):
+                G = reward + gamma * G
+                Gs.append(G)
+            Gs = torch.tensor(list(reversed(Gs)), dtype=torch.float32)
+            Gs += (initial_balance - player.balance) / player.max_balance
+            Gs = (Gs - torch.mean(Gs)) / (torch.std(Gs, unbiased=False) + 1e-8) # norm adv
 
+            loss_pg = torch.zeros(())
+            for (log_prob, _), adv in zip(hand_log_probs, Gs):
+                loss_pg = loss_pg - log_prob * adv
 
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+            loss_reward_var = lam_reward_var * torch.var(torch.tensor([r for _, r in hand_log_probs]), unbiased=False)
+            loss_conf = lam_confidence * torch.nn.functional.binary_cross_entropy_with_logits(torch.stack(confidences), (torch.tensor(wins) > 0).float())
+            loss_entropy = lam_entropy * torch.mean(torch.stack(player.model._entropies))
             
+            loss = loss_pg + loss_conf + loss_entropy
+            loss = loss + loss_reward_var
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+            player.model._entropies = []
 
             if episode % episode_test_debug == 0:
-                with torch.no_grad():
-                    mean,std = eval_model(player, GameClass, env_range, num_tests)
+                std, mean = eval_model(player, GameClass, env_range, num_tests, horizon)
                 player.model._log_probs = []
-                print (f"Episode {episode}, mean={mean}, std={std}")
+                player.model._entropies = []
+                print (f"Episode {episode}, mean={mean}, std={std}, loss={loss.item()}")
+                print (f"    Loss breakdown: PG={loss_pg.item()}, Conf={loss_conf.item()}, Entropy={loss_entropy.item()}")
+                print (f"                    RVar={loss_reward_var.item()}")
 
-def eval_model(player, GameClass, env_range, num_tests):
+def eval_model(player, GameClass, env_range, num_tests, horizon):
     player.model.eval()
+    player.model.pg_training = False
     pcts = []
     for _ in range(num_tests):
         game = GameClass(analytics=None,
@@ -91,14 +120,14 @@ def eval_model(player, GameClass, env_range, num_tests):
         player.balance = random.choice(env_range['balance'])
         start_balance = player.balance
         for i in range(player_count):
-            if i == pos_id:
+            if i == pos_id - 1:
                 game.add_player(player)
             else:
                 game.add_player(DefaultPlayer(name=i))
 
         done = False
         hands = 0
-        while not done and hands < 30:
+        while not done and hands < horizon:
             game.start_round()
             if game.check_deal():
                 game.play_game()
@@ -117,7 +146,7 @@ def reset_environment(player, GameClass, env_range):
                      min_bet=random.choice(env_range['min_bet']),
                      max_bet=random.choice(env_range['max_bet']),
                      payout_ratio=random.choice(env_range['payout_ratio']),
-                     debug=env_range['debug'],
+                     debug_level=env_range['debug_level'],
                      )
     player_count = torch.round(
         torch.clamp(
@@ -129,7 +158,7 @@ def reset_environment(player, GameClass, env_range):
     pos_id = random.randint(1, player_count)
     player.balance = random.choice(env_range['balance'])
     for i in range(player_count):
-        if i == pos_id:
+        if i == pos_id - 1:
             game.add_player(player)
         else:
             game.add_player(DefaultPlayer(name=i))
@@ -146,6 +175,8 @@ if __name__ == "__main__":
         'action_dim': 4,
         'force_play': False,
         'bet_std': 0.1,
+        'count_deltas': [-2, -1, 0, 1, 2],
+        'pg_training': True,
     }
 
     env_range = {
@@ -158,15 +189,20 @@ if __name__ == "__main__":
         'cashout_ratio': [2.5, 5],
         'players_mean': torch.tensor(3, dtype=torch.float32),
         'players_std': torch.tensor(1, dtype=torch.float32),
-        'debug': False,
+        'debug_level': False,
     }
 
     hyperparams = {
         'epochs': 500,
-        'episodes_per_epoch': 200,
-        'horizon': 30,
+        'episodes_per_epoch': 201,
+        'horizon': 50,
         'alpha': 0.01,
         'gamma': 0.98,
+        'lam_confidence': 0.05,
+        'lam_entropy': 0.01,
+        'lam_reward_var': 5,
+        'penalty_exit': 0.2,
+        'penalty_wong': 0.005,
         'debug': False
     }
 
@@ -189,6 +225,11 @@ if __name__ == "__main__":
                   horizon = hyperparams['horizon'],
                   alpha = hyperparams['alpha'],
                   gamma = hyperparams['gamma'],
+                  lam_confidence = hyperparams['lam_confidence'],
+                  lam_entropy = hyperparams['lam_entropy'],
+                  lam_reward_var = hyperparams['lam_reward_var'],
+                  penalty_exit = hyperparams['penalty_exit'],
+                  penalty_wong = hyperparams['penalty_wong'],
                   env_range = env_range)
 
     print ("Save?")
