@@ -6,6 +6,7 @@ class Network(torch.nn.Module, Model):
     def __init__(self, config):
         super(Network, self).__init__()
 
+        self.config = config
         encoder_input_dim = config['encoder_input_dim']
         encoder_hidden_dim = config['encoder_hidden_dim']
         encoder_activation = config['encoder_activation']
@@ -14,8 +15,6 @@ class Network(torch.nn.Module, Model):
         policy_activation = config['policy_activation']
         action_dim = config['action_dim']
 
-        self.pg_training = config.get('pg_training', False)
-        self.config = config
         self.count_deltas = torch.tensor(config['count_deltas'], dtype=torch.long)
         self.count_head = torch.nn.Embedding(14, len(self.count_deltas))
 
@@ -30,11 +29,10 @@ class Network(torch.nn.Module, Model):
             torch.nn.Linear(encoder_hidden_dim, 1),
         )
 
-        self.bet_head = torch.nn.Sequential(
+        self.decision_head = torch.nn.Sequential(
             torch.nn.Linear(encoder_input_dim + 1, encoder_hidden_dim),
             encoder_activation(),
-            torch.nn.Linear(encoder_hidden_dim, 1),
-            torch.nn.Tanh(), # to scale output from -1 to 1
+            torch.nn.Linear(encoder_hidden_dim, 3),
         )
 
         layers = []
@@ -47,10 +45,12 @@ class Network(torch.nn.Module, Model):
 
         self.policy = torch.nn.Sequential(*layers)
 
-        self._log_probs = []
-        self._confs = None
-        self._entropies = []
-        self.last_bet = 0.0
+        if self.training:
+            self.decision_ents = []
+            self.count_ents = []
+            self.log_probs = []
+            self.confs = None
+            self.last_bet = 0.0
 
     def bet_strategy(self, state, min_bet, max_bet):
         input_tensor = torch.tensor([
@@ -65,28 +65,35 @@ class Network(torch.nn.Module, Model):
 
         embedding = self.encoder(input_tensor)
         confidence = self.confidence_head(embedding)
-        
-        if self.pg_training:
-            self._confs = confidence.squeeze()
 
         bet_input = torch.cat([input_tensor, confidence], dim=1)
         
-        bet_mean = self.bet_head(bet_input)
-        bet_std = self.config['bet_std']
-
-        dist = torch.distributions.Normal(bet_mean, bet_std)
-        if self.pg_training:
-            bet_multi = dist.rsample().clamp(-1, 1)
+        decision_logits = self.decision_head(bet_input)
+        if self.training:
+            dist = torch.distributions.Categorical(logits=decision_logits)
+            decision = dist.sample()
         else:
-            bet_multi = bet_mean.clamp(-1, 1)
+            decision = torch.argmax(decision_logits)
 
-        if self.pg_training:
-            self._log_probs = [dist.log_prob(bet_multi).squeeze()]
-
-        bet = torch.clamp(bet_multi * max_bet, min=(min_bet if self.config['force_play'] else -1),max=state['balance'])
+        bet = 0
+        metadata = None
+        if decision == 0: # Leave
+            bet = -1
+        elif decision == 1: # Wong
+            bet = 0
+        elif decision == 2: # Conservative play; min-bet
+            edge = torch.tanh(confidence)
+            bet = torch.clamp(edge * max_bet, min=min_bet, max=state['balance'])
+            bet = bet.item()
         metadata = {'data': bet_input.squeeze().detach()}
-        self.last_bet = bet.item()
-        return bet.item(), metadata
+        self.last_bet = bet 
+
+        if self.training:
+            self.log_probs = [dist.log_prob(decision).squeeze()]
+            self.decision_ents = [dist.entropy()]
+            self.confs = confidence.squeeze()
+
+        return bet, metadata
 
     def get_policy(self, state):
         bet_input = state['metadata']['data'].detach().clone()
@@ -112,21 +119,23 @@ class Network(torch.nn.Module, Model):
     
     def decision_strategy(self, state):
         policy_logits = self.get_policy(state)
-        if self.pg_training:
+        if self.training:
             dist = torch.distributions.Categorical(logits=policy_logits)
             action = dist.sample()
-            self._log_probs.append(dist.log_prob(action).squeeze())
+            self.log_probs.append(dist.log_prob(action).squeeze())
         else:
             action = torch.argmax(policy_logits)
         return action
 
     def count_strategy(self, card):
         logits = self.count_head(torch.tensor(card, dtype=torch.long))
-        dist = torch.distributions.Categorical(logits=logits)
-        idx = dist.sample()
-        if self.pg_training:
-            self._log_probs.append(dist.log_prob(idx).squeeze())
-            self._entropies.append(dist.entropy().squeeze())
+        if self.training:
+            dist = torch.distributions.Categorical(logits=logits)
+            idx = dist.sample()
+            self.log_probs.append(dist.log_prob(idx).squeeze())
+            self.count_ents.append(dist.entropy().squeeze())
+        else:
+            idx = torch.argmax(logits)
         return self.count_deltas[idx].item()
 
     def save(self, path):

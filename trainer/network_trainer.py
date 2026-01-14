@@ -7,41 +7,73 @@ import tqdm
 import random
 import numpy as np
 
+config = {
+    'encoder_input_dim': 7,
+    'encoder_hidden_dim': 64,
+    'encoder_activation': torch.nn.ReLU,
+    'state_dim': 10,
+    'policy_hidden_dims': [32, 64, 32],
+    'policy_activation': torch.nn.ReLU,
+    'action_dim': 4,
+    'force_play': False,
+    'bet_std': 0.1,
+    'count_deltas': [-2, -1, 0, 1, 2],
+}
+
+env_range = {
+    'analytics': None, 
+    'deck_count': [2,3,4,5,6,7,8], 
+    'min_bet': [10,25,50], 
+    'max_bet': [1000, 1500, 2000], 
+    'payout_ratio': [1.5],
+    'balance': [500, 1000, 2000],
+    'cashout_ratio': [2.5, 5],
+    'players_mean': torch.tensor(3, dtype=torch.float32),
+    'players_std': torch.tensor(1, dtype=torch.float32),
+    'debug_level': 0,
+}
+
+hyperparams = {
+    'epochs': 500,
+    'episodes_per_epoch': 201,
+    'horizon': 50,
+    'lr': 0.003,
+    'gamma': 0.98,
+    'lam_confidence': 0.05,
+    'lam_decision_entropy': -1,
+    'lam_count_entropy': 0.01,
+    'lam_reward_var': 3,
+    'penalty_exit': 0.4,
+    'penalty_wong': 0.05,
+    'debug': False,
+    'num_tests': 50,
+    'episode_test_debug': 50,
+    'seed': 42,
+    'target_hitrate': 0.3
+}
+
 def train_network(player: TrainedPlayer, 
                   GameClass, 
-                  epochs: int,
-                  episodes_per_epoch: int, 
-                  horizon: int,
-                  alpha: float = 0.001,
-                  gamma: float = 0.99,
-                  lam_confidence: float = 0.5,
-                  lam_entropy: float = 0.01,
-                  lam_reward_var: float = 0.0,
-                  penalty_exit: float = 0.0,
-                  penalty_wong: float = 0.0,
-                  seed = 42,
-                  episode_test_debug = 50,
-                  num_tests = 50,
-                  env_range = None):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+                  hpars):
+    random.seed(hpars['seed'])
+    np.random.seed(hpars['seed'])
+    torch.manual_seed(hpars['seed'])
 
-    optimizer = torch.optim.Adam(player.model.parameters(), lr=alpha)
+    optimizer = torch.optim.Adam(player.model.parameters(), lr=hpars['lr'])
 
-    for epoch in tqdm.tqdm(range(epochs), desc="Training Epochs"):
-        for episode in range(episodes_per_epoch):
+    for epoch in tqdm.tqdm(range(hpars['epochs']), desc="Training Epochs"):
+        for episode in range(hpars['episodes_per_epoch']):
             player.model.train()
             player.model.pg_training = True
-            player.model._confs = None
-            initial_balance = player.balance
+            player.model.confs = None
             game = reset_environment(player, GameClass, env_range)
+            initial_balance = player.balance
             done = False 
             hands = 0
             hand_log_probs = []
             wins = []
             confidences = []
-            while not done and hands < horizon:
+            while not done and hands < hpars['horizon']:
                 game.start_round()
                 balance_in = player.balance
                 if game.check_deal():
@@ -52,22 +84,22 @@ def train_network(player: TrainedPlayer,
                         or player.balance <= game.min_bet
                         or not game.in_game(player.name))
                 wins.append(torch.sign(torch.tensor(player.balance - balance_in, dtype=torch.float32)))
-                confidences.append(player.model._confs)
-                if player.model._log_probs:
-                    reward = (player.balance - balance_in) / player.max_balance # loss per round
-                    if player.model.last_bet <= 0:
-                        reward -= penalty_exit
-                    elif player.model.last_bet < game.min_bet:
-                        reward -= penalty_wong
-                    log_prob = torch.sum(torch.stack(player.model._log_probs))
-                    hand_log_probs.append((log_prob, reward))
-                    player.model._log_probs = []
+                confidences.append(player.model.confs)
+
+                reward = (player.balance - initial_balance) / player.max_balance # loss per round
+                if player.model.last_bet <= 0:
+                    reward -= hpars['penalty_exit']
+                elif player.model.last_bet < game.min_bet:
+                    reward -= hpars['penalty_wong']
+                log_prob = torch.sum(torch.stack(player.model.log_probs))
+                hand_log_probs.append((log_prob, reward))
+                player.model.log_probs = []
 
             # baseline
             Gs = []
             G = 0
             for log_prob, reward in reversed(hand_log_probs):
-                G = reward + gamma * G
+                G = reward + hpars['gamma'] * G
                 Gs.append(G)
             Gs = torch.tensor(list(reversed(Gs)), dtype=torch.float32)
             Gs += (initial_balance - player.balance) / player.max_balance
@@ -77,28 +109,29 @@ def train_network(player: TrainedPlayer,
             for (log_prob, _), adv in zip(hand_log_probs, Gs):
                 loss_pg = loss_pg - log_prob * adv
 
-            loss_reward_var = lam_reward_var * torch.var(torch.tensor([r for _, r in hand_log_probs]), unbiased=False)
-            loss_conf = lam_confidence * torch.nn.functional.binary_cross_entropy_with_logits(torch.stack(confidences), (torch.tensor(wins) > 0).float())
-            loss_entropy = lam_entropy * torch.mean(torch.stack(player.model._entropies))
-            
-            loss = loss_pg + loss_conf + loss_entropy
+            loss_reward_var = hpars['lam_reward_var'] * torch.var(torch.tensor([r for _, r in hand_log_probs]), unbiased=False)
+            loss_conf = hpars['lam_confidence'] * torch.nn.functional.binary_cross_entropy_with_logits(torch.stack(confidences), (torch.tensor(wins) > 0).float())
+            loss_count_ent = hpars['lam_count_entropy'] * torch.mean(torch.stack(player.model.count_ents))
+            loss_decision_ent = hpars['lam_decision_entropy'] * torch.mean(torch.stack(player.model.decision_ents))
+
+            loss = loss_pg + loss_conf + loss_count_ent + loss_decision_ent
             loss = loss + loss_reward_var
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             
-            player.model._entropies = []
+            player.model.decision_ents = []
+            player.model.count_ents = []
 
-            if episode % episode_test_debug == 0:
-                std, mean = eval_model(player, GameClass, env_range, num_tests, horizon)
-                player.model._log_probs = []
-                player.model._entropies = []
-                print (f"Episode {episode}, mean={mean}, std={std}, loss={loss.item()}")
-                print (f"    Loss breakdown: PG={loss_pg.item()}, Conf={loss_conf.item()}, Entropy={loss_entropy.item()}")
+            if episode % hpars['episode_test_debug'] == 0:
+                std, mean, winrate = eval_model(player, GameClass, env_range, hpars['num_tests'], hpars['horizon'], hpars['target_hitrate'])
+                print (f"Episode {episode}, mean={mean}, std={std}, winrate={winrate}, loss={loss.item()}")
+                print (f"    Loss breakdown: PG={loss_pg.item()}, Conf={loss_conf.item()}")
+                print (f"    Entropy Loss:   Count={loss_count_ent.item()}, Decision={loss_decision_ent.item()}")
                 print (f"                    RVar={loss_reward_var.item()}")
 
-def eval_model(player, GameClass, env_range, num_tests, horizon):
+def eval_model(player, GameClass, env_range, num_tests, horizon, target_hitrate):
     player.model.eval()
     player.model.pg_training = False
     pcts = []
@@ -137,9 +170,10 @@ def eval_model(player, GameClass, env_range, num_tests, horizon):
                     or player.balance <= game.min_bet
                     or not game.in_game(player.name))
         pcts.append((player.balance - start_balance) / start_balance)
-    return torch.std_mean(torch.tensor(pcts))
-        
-            
+    
+    winrate = torch.sum(torch.tensor(pcts) > target_hitrate) / num_tests
+    return torch.std_mean(torch.tensor(pcts)) + (winrate,)
+                
 def reset_environment(player, GameClass, env_range):
     game = GameClass(analytics=None,
                      deck_count=random.choice(env_range['deck_count']),
@@ -165,72 +199,17 @@ def reset_environment(player, GameClass, env_range):
     return game
 
 if __name__ == "__main__":
-    config = {
-        'encoder_input_dim': 7,
-        'encoder_hidden_dim': 64,
-        'encoder_activation': torch.nn.ReLU,
-        'state_dim': 10,
-        'policy_hidden_dims': [32, 64, 32],
-        'policy_activation': torch.nn.ReLU,
-        'action_dim': 4,
-        'force_play': False,
-        'bet_std': 0.1,
-        'count_deltas': [-2, -1, 0, 1, 2],
-        'pg_training': True,
-    }
-
-    env_range = {
-        'analytics': None, 
-        'deck_count': [2,3,4,5,6,7,8], 
-        'min_bet': [10,25,50], 
-        'max_bet': [1000, 1500, 2000], 
-        'payout_ratio': [1.5],
-        'balance': [500, 1000, 2000],
-        'cashout_ratio': [2.5, 5],
-        'players_mean': torch.tensor(3, dtype=torch.float32),
-        'players_std': torch.tensor(1, dtype=torch.float32),
-        'debug_level': False,
-    }
-
-    hyperparams = {
-        'epochs': 500,
-        'episodes_per_epoch': 201,
-        'horizon': 50,
-        'alpha': 0.01,
-        'gamma': 0.98,
-        'lam_confidence': 0.05,
-        'lam_entropy': 0.01,
-        'lam_reward_var': 5,
-        'penalty_exit': 0.2,
-        'penalty_wong': 0.005,
-        'debug': False
-    }
-
-    start_balance = 1000
-    cashout_multiplier = 5
 
     model = Network(config)
     player = TrainedPlayer(
         model=model,
         name="NetworkTrainer",
-        balance=start_balance,
-        max_balance=start_balance * cashout_multiplier,
     )
     GameClass = FairBlackjack
 
     train_network(player, 
                   GameClass, 
-                  epochs = hyperparams['epochs'],
-                  episodes_per_epoch = hyperparams['episodes_per_epoch'],
-                  horizon = hyperparams['horizon'],
-                  alpha = hyperparams['alpha'],
-                  gamma = hyperparams['gamma'],
-                  lam_confidence = hyperparams['lam_confidence'],
-                  lam_entropy = hyperparams['lam_entropy'],
-                  lam_reward_var = hyperparams['lam_reward_var'],
-                  penalty_exit = hyperparams['penalty_exit'],
-                  penalty_wong = hyperparams['penalty_wong'],
-                  env_range = env_range)
+                  hyperparams)
 
     print ("Save?")
     should_save = input()
