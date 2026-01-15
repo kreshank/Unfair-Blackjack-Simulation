@@ -3,10 +3,12 @@ from models.network import Network
 from blackjack.fair import FairBlackjack
 from player.default import DefaultPlayer
 from player.model import TrainedPlayer
+from utils.training import reset_environment, eval_model, visualize_stats_realtime
 import tqdm
 from pathlib import Path
 import random
 import numpy as np
+import argparse
 
 config = {
     'encoder_input_dim': 7,
@@ -134,91 +136,83 @@ def train_network(player: TrainedPlayer,
                 print (f"    Entropy Loss:   Count={loss_count_ent.item()}, Decision={loss_decision_ent.item()}")
                 print (f"                    RVar={loss_reward_var.item()}")
 
-def eval_model(player, GameClass, env_range, num_tests, horizon, target_hitrate):
-    player.model.eval()
-    player.model.pg_training = False
-    pcts = []
-    for _ in range(num_tests):
-        game = GameClass(analytics=None,
-                        deck_count=random.choice(env_range['deck_count']),
-                        min_bet=random.choice(env_range['min_bet']),
-                        max_bet=random.choice(env_range['max_bet']),
-                        payout_ratio=random.choice(env_range['payout_ratio']),
-                        )
-        player_count = torch.round(
-            torch.clamp(
-                torch.normal(env_range['players_mean'],
-                            env_range['players_std']),
-                1,
-                6)
-        ).int().item()
-        pos_id = random.randint(1, player_count)
-        player.balance = random.choice(env_range['balance'])
-        start_balance = player.balance
-        for i in range(player_count):
-            if i == pos_id - 1:
-                game.add_player(player)
-            else:
-                game.add_player(DefaultPlayer(name=i))
-
-        done = False
-        hands = 0
-        while not done and hands < horizon:
-            game.start_round()
-            if game.check_deal():
-                game.play_game()
-            
-            hands += 1
-            done = (player.balance >= player.max_balance 
-                    or player.balance <= game.min_bet
-                    or not game.in_game(player.name))
-        pcts.append((player.balance - start_balance) / start_balance)
-    
-    winrate = torch.sum(torch.tensor(pcts) > target_hitrate) / num_tests
-    return torch.std_mean(torch.tensor(pcts)) + (winrate,)
-                
-def reset_environment(player, GameClass, env_range):
-    game = GameClass(analytics=None,
-                     deck_count=random.choice(env_range['deck_count']),
-                     min_bet=random.choice(env_range['min_bet']),
-                     max_bet=random.choice(env_range['max_bet']),
-                     payout_ratio=random.choice(env_range['payout_ratio']),
-                     debug_level=env_range['debug_level'],
-                     )
-    player_count = torch.round(
-        torch.clamp(
-            torch.normal(env_range['players_mean'],
-                         env_range['players_std']),
-            1,
-            6)
-    ).int().item()
-    pos_id = random.randint(1, player_count)
-    player.balance = random.choice(env_range['balance'])
-    for i in range(player_count):
-        if i == pos_id - 1:
-            game.add_player(player)
-        else:
-            game.add_player(DefaultPlayer(name=i))
-    return game
-
 if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(
+        description="Train or evaluate Blackjack agent"
+    )
+
+    parser.add_argument(
+        "--load", type=str, default=None,
+        help="Path to saved model (.pt). If provided, skip training."
+    )
+
+    parser.add_argument(
+        "--visualize", action="store_true",
+        help="Run real-time rollout visualization after loading/training"
+    )
+
+    parser.add_argument(
+        "--tests", type=int, default=500,
+        help="Number of rollout simulations for visualization"
+    )
+
+    parser.add_argument(
+        "--horizon", type=int, default=50,
+        help="Max hands per rollout"
+    )
+
+    parser.add_argument(
+        "--target-hitrate", type=float, default=0.0,
+        help="ROI threshold for winrate metric"
+    )
+
+    parser.add_argument(
+        "--update-every", type=int,default=10,
+        help="Update plot every N rollouts"
+    )
+
+    args = parser.parse_args()
 
     model = Network(config)
     player = TrainedPlayer(
         model=model,
         name="NetworkTrainer",
     )
+
     GameClass = FairBlackjack
 
-    train_network(player, 
-                  GameClass, 
-                  hyperparams)
+    if args.load is not None:
+        model_path = Path(args.load).expanduser().resolve()
+        if not model_path.exists():
+            raise FileNotFoundError(f"Model not found: {model_path}")
 
-    print ("Save?")
-    should_save = input()
-    if should_save.lower() in ['y', 'yes']:
-        print ("Enter save name:")
-        file_name = input().strip()
-        file_path = Path(__file__).resolve().parent.parent / "saved_models" / f"{file_name}.pt"
-        player.model.save(file_path)
-        print (f"Model saved to {file_path}")
+        print(f"Loading model from {model_path}")
+        player.model.load(model_path, config)
+        player.model.eval()
+    else:
+        train_network(
+            player,
+            GameClass,
+            hyperparams
+        )
+
+        print("Save?")
+        should_save = input().strip().lower()
+        if should_save in ["y", "yes"]:
+            print("Enter save name:")
+            file_name = input().strip()
+            file_path = Path(__file__).resolve().parent.parent / "saved_models" / f"{file_name}.pt"
+            player.model.save(file_path)
+            print(f"Model saved to {file_path}")
+
+    if args.visualize:
+        visualize_stats_realtime(
+            player=player,
+            GameClass=GameClass,
+            env_range=env_range,
+            num_tests=args.tests,
+            horizon=args.horizon,
+            target_hitrate=args.target_hitrate,
+            update_every=args.update_every,
+        )
