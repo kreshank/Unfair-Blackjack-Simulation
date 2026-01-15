@@ -4,6 +4,7 @@ from blackjack.fair import FairBlackjack
 from player.default import DefaultPlayer
 from player.model import TrainedPlayer
 import tqdm
+from pathlib import Path
 import random
 import numpy as np
 
@@ -15,7 +16,7 @@ config = {
     'policy_hidden_dims': [32, 64, 32],
     'policy_activation': torch.nn.ReLU,
     'action_dim': 4,
-    'force_play': False,
+    'allow_wong': False,
     'bet_std': 0.1,
     'count_deltas': [-2, -1, 0, 1, 2],
 }
@@ -34,7 +35,7 @@ env_range = {
 }
 
 hyperparams = {
-    'epochs': 500,
+    'epochs': 5,
     'episodes_per_epoch': 201,
     'horizon': 50,
     'lr': 0.003,
@@ -49,7 +50,8 @@ hyperparams = {
     'num_tests': 50,
     'episode_test_debug': 50,
     'seed': 42,
-    'target_hitrate': 0.3
+    'target_hitrate': 0.3,
+    'grad_clip_max_norm': 1.0,
 }
 
 def train_network(player: TrainedPlayer, 
@@ -86,7 +88,7 @@ def train_network(player: TrainedPlayer,
                 wins.append(torch.sign(torch.tensor(player.balance - balance_in, dtype=torch.float32)))
                 confidences.append(player.model.confs)
 
-                reward = (player.balance - initial_balance) / player.max_balance # loss per round
+                reward = (player.balance - balance_in) / player.max_balance # loss per round
                 if player.model.last_bet <= 0:
                     reward -= hpars['penalty_exit']
                 elif player.model.last_bet < game.min_bet:
@@ -102,7 +104,7 @@ def train_network(player: TrainedPlayer,
                 G = reward + hpars['gamma'] * G
                 Gs.append(G)
             Gs = torch.tensor(list(reversed(Gs)), dtype=torch.float32)
-            Gs += (initial_balance - player.balance) / player.max_balance
+            Gs += (player.balance - initial_balance) / player.max_balance
             Gs = (Gs - torch.mean(Gs)) / (torch.std(Gs, unbiased=False) + 1e-8) # norm adv
 
             loss_pg = torch.zeros(())
@@ -119,6 +121,7 @@ def train_network(player: TrainedPlayer,
 
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(player.model.parameters(), hpars['grad_clip_max_norm'])
             optimizer.step()
             
             player.model.decision_ents = []
@@ -216,6 +219,6 @@ if __name__ == "__main__":
     if should_save.lower() in ['y', 'yes']:
         print ("Enter save name:")
         file_name = input().strip()
-        file_path = f"../saved_models/{file_name}.pt"
+        file_path = Path(__file__).resolve().parent.parent / "saved_models" / f"{file_name}.pt"
         player.model.save(file_path)
         print (f"Model saved to {file_path}")

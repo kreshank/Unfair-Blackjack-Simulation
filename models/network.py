@@ -32,7 +32,7 @@ class Network(torch.nn.Module, Model):
         self.decision_head = torch.nn.Sequential(
             torch.nn.Linear(encoder_input_dim + 1, encoder_hidden_dim),
             encoder_activation(),
-            torch.nn.Linear(encoder_hidden_dim, 3),
+            torch.nn.Linear(encoder_hidden_dim, 3 if config['allow_wong'] else 2),
         )
 
         layers = []
@@ -79,12 +79,12 @@ class Network(torch.nn.Module, Model):
         metadata = None
         if decision == 0: # Leave
             bet = -1
-        elif decision == 1: # Wong
-            bet = 0
-        elif decision == 2: # Conservative play; min-bet
+        elif decision == 1: # Conservative play; min-bet
             edge = torch.tanh(confidence)
             bet = torch.clamp(edge * max_bet, min=min_bet, max=state['balance'])
             bet = bet.item()
+        elif decision == 2: # Wong
+            bet = 0
         metadata = {'data': bet_input.squeeze().detach()}
         self.last_bet = bet 
 
