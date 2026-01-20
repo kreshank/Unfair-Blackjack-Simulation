@@ -12,3 +12,8 @@ This simulator allows for all of these settings to be tested and analytic data w
 
 Notably with the TrainedPlayer class -- this is a trainable neural network that will learn 1) a card counting strategy, 2) betting strategy depending on
 running count, and 3) per-hand decision strategy. The card counting strategy can also be overridden with a fixed strategy if desired (Hi-Lo, K-O, etc.).
+
+## Methodology
+### Network Player
+This is a standard neural network trained with Monte-Carlo REINFORCE and gradient clipping. The training is somewhat unstable as each epoch randomizes the setting:
+shoe size, number of players (other players play by Book), etc. For training, we can modify batch sizes and number of episodes for stability.
