@@ -100,6 +100,7 @@ def visualize_stats_realtime(
 
         mean = data.mean()
         median = np.median(data)
+        std = np.std(data)
 
         if current_view["mode"] == "dist":
             ax.hist(data, bins=40, density=True, alpha=0.4, label="ROI Histogram")
@@ -142,7 +143,10 @@ def visualize_stats_realtime(
             ax.axvline(mode, color="purple", linestyle="--", label=f"Mode {mode:.3f}")
 
         ax.set_xlabel("ROI")
-        ax.legend()
+        handles, labels = ax.get_legend_handles_labels()
+        handles.append(plt.Line2D([], [], color='none', label=""))
+        labels.append(f"STD={std:.3f}")
+        ax.legend(handles, labels)
         ax.grid(alpha=0.3)
 
         plt.pause(0.001)

@@ -142,10 +142,7 @@ class Network(torch.nn.Module, Model):
         torch.save(self.state_dict(), path)
 
     def load(self, path, config):
-        self.model = Network(config)  
-        self.model.load_state_dict(torch.load(path))
-        self.model.eval()
-        return self.model
+        self.load_state_dict(torch.load(path, weights_only=True))
 
     @staticmethod
     def initialize_weights(m):

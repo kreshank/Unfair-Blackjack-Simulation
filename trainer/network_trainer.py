@@ -38,20 +38,22 @@ env_range = {
 
 hyperparams = {
     'epochs': 5,
-    'episodes_per_epoch': 201,
-    'horizon': 50,
+    'batches_per_epoch': 100,
+    'episodes_per_batch': 8,
+    'episodes_per_epoch': 101,
+    'horizon': 30,
     'lr': 0.003,
     'gamma': 0.98,
     'lam_confidence': 0.05,
-    'lam_decision_entropy': -1,
-    'lam_count_entropy': 0.01,
+    'lam_decision_entropy': -10,
+    'lam_count_entropy': -10,
     'lam_reward_var': 3,
-    'penalty_exit': 0.4,
-    'penalty_wong': 0.05,
+    'penalty_exit': 0.8,
+    'penalty_wong': 0.2,
     'debug': False,
-    'num_tests': 50,
+    'num_tests': 100,
     'episode_test_debug': 50,
-    'seed': 42,
+    'seed': 134,
     'target_hitrate': 0.3,
     'grad_clip_max_norm': 1.0,
 }
@@ -66,75 +68,106 @@ def train_network(player: TrainedPlayer,
     optimizer = torch.optim.Adam(player.model.parameters(), lr=hpars['lr'])
 
     for epoch in tqdm.tqdm(range(hpars['epochs']), desc="Training Epochs"):
-        for episode in range(hpars['episodes_per_epoch']):
+        for batch in tqdm.tqdm(range(hpars['batches_per_epoch']), desc="Training Batches"):
+            optimizer.zero_grad()
+            batch_loss_pg = torch.zeros(())
+            batch_loss_reward_var = torch.zeros(())
+            batch_loss_conf = torch.zeros(())
+            batch_loss_count_ent = torch.zeros(())
+            batch_loss_decision_ent = torch.zeros(())
+
             player.model.train()
-            player.model.pg_training = True
-            player.model.confs = None
-            game = reset_environment(player, GameClass, env_range)
-            initial_balance = player.balance
-            done = False 
-            hands = 0
-            hand_log_probs = []
-            wins = []
-            confidences = []
-            while not done and hands < hpars['horizon']:
-                game.start_round()
-                balance_in = player.balance
-                if game.check_deal():
-                    game.play_game()
 
-                hands += 1
-                done = (player.balance >= player.max_balance 
-                        or player.balance <= game.min_bet
-                        or not game.in_game(player.name))
-                wins.append(torch.sign(torch.tensor(player.balance - balance_in, dtype=torch.float32)))
-                confidences.append(player.model.confs)
+            for episode in range(hpars['episodes_per_batch']):
+                game = reset_environment(player, GameClass, env_range)
+                initial_balance = player.balance 
 
-                reward = (player.balance - balance_in) / player.max_balance # loss per round
-                if player.model.last_bet <= 0:
-                    reward -= hpars['penalty_exit']
-                elif player.model.last_bet < game.min_bet:
-                    reward -= hpars['penalty_wong']
-                log_prob = torch.sum(torch.stack(player.model.log_probs))
-                hand_log_probs.append((log_prob, reward))
-                player.model.log_probs = []
+                rollout_state = 0 
+                hands = 0
+                hand_log_probs = []
+                wins = []
+                confidences = []
+                player.model.confs = None
 
-            # baseline
-            Gs = []
-            G = 0
-            for log_prob, reward in reversed(hand_log_probs):
-                G = reward + hpars['gamma'] * G
-                Gs.append(G)
-            Gs = torch.tensor(list(reversed(Gs)), dtype=torch.float32)
-            Gs += (player.balance - initial_balance) / player.max_balance
-            Gs = (Gs - torch.mean(Gs)) / (torch.std(Gs, unbiased=False) + 1e-8) # norm adv
+                # Rollout
+                while rollout_state == 0 and hands < hpars['horizon']:
+                    game.start_round()
+                    hand_start_balance = player.balance 
 
-            loss_pg = torch.zeros(())
-            for (log_prob, _), adv in zip(hand_log_probs, Gs):
-                loss_pg = loss_pg - log_prob * adv
+                    if game.check_deal():
+                        game.play_game()
 
-            loss_reward_var = hpars['lam_reward_var'] * torch.var(torch.tensor([r for _, r in hand_log_probs]), unbiased=False)
-            loss_conf = hpars['lam_confidence'] * torch.nn.functional.binary_cross_entropy_with_logits(torch.stack(confidences), (torch.tensor(wins) > 0).float())
-            loss_count_ent = hpars['lam_count_entropy'] * torch.mean(torch.stack(player.model.count_ents))
-            loss_decision_ent = hpars['lam_decision_entropy'] * torch.mean(torch.stack(player.model.decision_ents))
+                    hands += 1
 
-            loss = loss_pg + loss_conf + loss_count_ent + loss_decision_ent
-            loss = loss + loss_reward_var
+                    if player.balance >= player.max_balance:
+                        rollout_state = 1
+                    elif player.balance <= game.min_bet:
+                        rollout_state = 2
+                    elif player.model.last_bet < 0 or not game.in_game(player.name):
+                        rollout_state = 3
+
+                    wins.append(torch.sign(torch.tensor(player.balance - hand_start_balance, dtype=torch.float32)))
+                    confidences.append(player.model.confs)
+
+                    reward = (player.balance - hand_start_balance) / player.max_balance
+                    if player.model.last_bet <= 0:
+                        reward -= hpars['penalty_exit']
+                    elif player.model.last_bet < game.min_bet:
+                        reward -= hpars['penalty_wong']
+                    log_prob = torch.sum(torch.stack(player.model.log_probs))
+                    hand_log_probs.append((log_prob, reward))
+                    player.model.log_probs = []
+
+                # baseline
+                Gs = []
+                G = 0
+                for log_prob, reward in reversed(hand_log_probs):
+                    G = reward + hpars['gamma'] * G
+                    Gs.append(G)
+                Gs = torch.tensor(list(reversed(Gs)), dtype=torch.float32)
+                Gs += (player.balance - initial_balance) / player.max_balance
+                Gs = (Gs - torch.mean(Gs)) / (torch.std(Gs, unbiased=False) + 1e-8) # norm adv
+
+                loss_pg = torch.zeros(())
+                for (log_prob, _), adv in zip(hand_log_probs, Gs):
+                    loss_pg = loss_pg - log_prob * adv
+                batch_loss_pg = batch_loss_pg + loss_pg
+
+                loss_reward_var = hpars['lam_reward_var'] * torch.var(torch.tensor([r for _, r in hand_log_probs]), unbiased=False)
+                batch_loss_reward_var = batch_loss_reward_var + loss_reward_var
+                
+                loss_conf = hpars['lam_confidence'] * torch.nn.functional.binary_cross_entropy_with_logits(torch.stack(confidences), (torch.tensor(wins) > 0).float())
+                batch_loss_conf = batch_loss_conf + loss_conf
+                
+                loss_count_ent = hpars['lam_count_entropy'] * torch.mean(torch.stack(player.model.count_ents))
+                batch_loss_count_ent = batch_loss_count_ent + loss_count_ent
+                
+                loss_decision_ent = hpars['lam_decision_entropy'] * torch.mean(torch.stack(player.model.decision_ents))
+                batch_loss_decision_ent = batch_loss_decision_ent + loss_decision_ent
+
+                player.model.decision_ents = []
+                player.model.count_ents = []
+
+            # Batch normalization
+            batch_loss_pg /= hpars['episodes_per_batch']
+            batch_loss_conf /= hpars['episodes_per_batch']
+            batch_loss_count_ent /= hpars['episodes_per_batch']
+            batch_loss_decision_ent /= hpars['episodes_per_batch']
+            batch_loss_reward_var /= hpars['episodes_per_batch']
+
+            batch_loss = batch_loss_pg + batch_loss_conf + batch_loss_count_ent + batch_loss_decision_ent
+            batch_loss = batch_loss + batch_loss_reward_var
 
             optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(player.model.parameters(), hpars['grad_clip_max_norm'])
+            batch_loss.backward()
+            #torch.nn.utils.clip_grad_norm_(player.model.parameters(), hpars['grad_clip_max_norm'])
             optimizer.step()
             
-            player.model.decision_ents = []
-            player.model.count_ents = []
-
-            if episode % hpars['episode_test_debug'] == 0:
-                std, mean, winrate = eval_model(player, GameClass, env_range, hpars['num_tests'], hpars['horizon'], hpars['target_hitrate'])
-                print (f"Episode {episode}, mean={mean}, std={std}, winrate={winrate}, loss={loss.item()}")
-                print (f"    Loss breakdown: PG={loss_pg.item()}, Conf={loss_conf.item()}")
-                print (f"    Entropy Loss:   Count={loss_count_ent.item()}, Decision={loss_decision_ent.item()}")
-                print (f"                    RVar={loss_reward_var.item()}")
+            std, mean, winrate = eval_model(player, GameClass, env_range, hpars['num_tests'], hpars['horizon'], hpars['target_hitrate'])
+            print (f"Batch {batch}, mean={mean}, std={std}, winrate={winrate}, loss={batch_loss.item()}")
+            print (f"    Loss breakdown: PG={batch_loss_pg.item()}, Conf={batch_loss_conf.item()}")
+            print (f"    Entropy Loss:   Count={batch_loss_count_ent.item()}, Decision={batch_loss_decision_ent.item()}")
+            print (f"                    RVar={batch_loss_reward_var.item()}")
 
 if __name__ == "__main__":
 
@@ -153,17 +186,17 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--tests", type=int, default=500,
+        "--tests", type=int, default=hyperparams['num_tests'],
         help="Number of rollout simulations for visualization"
     )
 
     parser.add_argument(
-        "--horizon", type=int, default=50,
+        "--horizon", type=int, default=hyperparams['horizon'],
         help="Max hands per rollout"
     )
 
     parser.add_argument(
-        "--target-hitrate", type=float, default=0.0,
+        "--target-hitrate", type=float, default=hyperparams['target_hitrate'],
         help="ROI threshold for winrate metric"
     )
 
