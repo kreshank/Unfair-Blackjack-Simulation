@@ -110,8 +110,9 @@ class Blackjack:
                 else:
                     raise Exception(f"Player {ph.player.name} not permitted to double down.")
             elif decision == 3:  # Split
-                if len(ph.hand) == 2 and ph.hand[0] == ph.hand[1]:
+                if len(ph.hand) == 2 and ph.hand[0] == ph.hand[1] and ph.bet <= ph.player.balance:
                     bet = ph.bet
+                    ph.player.balance -= ph.bet
                     next_hand = (ph.hand[0], self.draw())
                     ph.hand = (ph.hand[1], self.draw())
                     self.play_hand(ph, split_hand=True)

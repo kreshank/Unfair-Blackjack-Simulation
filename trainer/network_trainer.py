@@ -3,12 +3,15 @@ from models.network import Network
 from blackjack.fair import FairBlackjack
 from player.default import DefaultPlayer
 from player.model import TrainedPlayer
-from utils.training import reset_environment, eval_model, visualize_stats_realtime
+from utils.env import reset_environment
+from utils.evaluation import eval_model
+from utils.training import visualize_stats_realtime
 import tqdm
 from pathlib import Path
 import random
 import numpy as np
 import argparse
+from window.app import launch_window
 
 config = {
     'encoder_input_dim': 7,
@@ -240,6 +243,8 @@ if __name__ == "__main__":
             print(f"Model saved to {file_path}")
 
     if args.visualize:
+        launch_window(player, GameClass, env_range)
+        '''
         visualize_stats_realtime(
             player=player,
             GameClass=GameClass,
@@ -249,3 +254,4 @@ if __name__ == "__main__":
             target_hitrate=args.target_hitrate,
             update_every=args.update_every,
         )
+        '''
