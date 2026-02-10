@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (
 from window.pages.training_page import TrainingPage
 from window.pages.eval_page import EvalPage
 from window.pages.analysis_page import AnalysisPage
+from utils.evaluation import compute_strategy_tables
 
 
 class MainWindow(QMainWindow):
@@ -67,7 +68,12 @@ class MainWindow(QMainWindow):
             GameClass=self.GameClass,
             env_range=self.env_range,
         )
-        self.analysis_page = AnalysisPage(parent=self)
+        self.analysis_page = AnalysisPage(
+            parent=self,
+            player=self.player,
+            GameClass=self.GameClass,
+            env_range=self.env_range,
+        )
 
         # Add to stacked widget
         self.stacked.addWidget(self.training_page)   # index 0
@@ -85,6 +91,15 @@ class MainWindow(QMainWindow):
             lambda: self.stacked.setCurrentWidget(self.analysis_page)
         )
 
+def preload_strategy_cache(player, GameClass, env_range):
+    deck_values = sorted(set(env_range["deck_count"])) if env_range else [6]
+    true_counts = [tc / 2 for tc in range(-10, 11)]    # -5, -4.5, ..., 4.5, 5
+
+    for deck in deck_values:
+        for tc in true_counts:
+            compute_strategy_tables(player, deck, tc)
+
+
 def launch_window(player=None, GameClass=None, env_range=None):
     if player is None or GameClass is None or env_range is None:
         raise ValueError(
@@ -93,8 +108,7 @@ def launch_window(player=None, GameClass=None, env_range=None):
     app = QApplication(sys.argv)
     win = MainWindow(player, GameClass, env_range)
     win.show()
-
+    preload_strategy_cache(player, GameClass, env_range)
     return app.exec_()
-
 if __name__ == "__main__":
     launch_window(player=DefaultPlayer("TestPlayer"), GameClass=None, env_range={})
